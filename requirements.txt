@@ -1,0 +1,5 @@
+pandas
+tqdm
+newspaper3k
+selenium
+joblib
