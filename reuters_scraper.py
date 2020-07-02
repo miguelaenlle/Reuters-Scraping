@@ -15,7 +15,7 @@ from datetime import datetime # for getting today's date
 from joblib import Parallel, delayed # for parallel processing
 
 # Functions
-def get_data_for_stock(stock, verbose = False, massive_scrape_mode = False):
+def get_data_for_stock(stock, verbose = False):
 	# get_data_for_stock()
 
 	# Takes input "stock" and outputs a {stock}.csv file to the reuters_data directory.
@@ -215,6 +215,167 @@ def convert_link_to_data(link):
 		# NaNs will be outputted.
 		return [np.nan, np.nan, np.nan] 
 
+import time
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 
-data_for_stock = get_data_for_stock('NNVC', True)
-print(data_for_stock)
+from tqdm import tqdm
+from newspaper import Article
+from selenium import webdriver
+
+def get_data_for_stock_lb_base(stock: str, days_to_look_back: int):
+	# get_data_for_stock()
+
+	# Takes input "stock" and outputs a {stock}.csv file to the reuters_data directory.
+	# Also, a folder called "processed" contains more folders whose names are of the
+	# stocks that have already been processed. This is for making it easy to just run the 
+	# script again if it is stopped (e.g. your PC crashes, you have to kill the script)
+
+	# Input: stock (str) - ticker symbol of a designated stock
+	# Output: None
+
+	# Set the Firefox webdriver to run headless in the background
+	fireFoxOptions = webdriver.FirefoxOptions() 
+	fireFoxOptions.set_headless() 
+	
+	driver = webdriver.Firefox(options = fireFoxOptions) # Initialize the webdriver instance in the background
+
+	try:
+		# Search Reuters for {stock}
+		driver.get('https://www.reuters.com/search/news?blob={}'.format(stock)) 
+		time.sleep(2) # Wait for the page to load
+
+		# Reuters should query the company if they have written articles on it.
+		# If they haven't, an error will be thrown and no files will be outputted
+		# This line gets the company they queried's element which contains
+		# the stock's name and URL to Reuters's page on the stock
+		text = driver.find_element_by_xpath('/html/body/div[4]/section[2]/div/div[1]/div[3]/div/div/div/div[1]/a').text
+
+		# {condition} will determine if the stock queried is actually 
+		# the stock that we're trying to get articles on
+		condition = False
+
+		# Reuters will format the element's text in 2 ways: 
+		
+		# {company name} ({ticker}.{some additional text})
+		# e.g. 
+		# Apple Inc (AAPL.OQ)
+		# or
+		# {company name} ({ticker})
+		# e.g.
+		# Alcoa Corp (AA)
+
+		# The following lines of code will filter down the element's text
+		# to just get {ticker}
+		# e.g. 
+		# Apple Inc (AAPL.OQ) --> AAPL
+		# Aloca Corp (AA)     --> AA
+		if '.' in text: # Check if a period is in the text
+			# Check if {ticker}.upper() == {stock}.upper()
+			if text[text.find('(') + 1:text.find('.')].upper() == stock.upper(): 
+				condition = True # {condition} = True means that the queried stock is a match
+		else: # If there is no period 
+			# Check if {ticker}.upper() == {stock}.upper()
+			if text[text.find('(') + 1: text.find(')')].upper() == stock.upper():
+				condition = True # {condition} = True means that the queried stock is a match
+
+		if condition: # If {stock} has been found in Reuters, continue		
+			# Click the element's link, going to Reuters's 
+			driver.find_element_by_xpath('/html/body/div[4]/section[2]/div/div[1]/div[3]/div/div/div/div[1]/a').click()
+			time.sleep(0.5) # Let the stock's Reuters page load
+
+			# Go to the "News" section of the stock's Reuters page
+			driver.find_element_by_xpath('/html/body/div[1]/div/div[3]/div/div/nav/div[1]/div/div/ul/li[2]/button').click()
+			time.sleep(5)
+
+			# The next segment will scroll down to the bottom of the "News"
+			# page of the stock's Reuters page
+			SCROLL_PAUSE_TIME = 0.5 # This is how much time it waits before scrolling to 
+									# the bottom of the page again
+
+			# Get the last height of the page
+			last_height = driver.execute_script("return document.body.scrollHeight")
+			
+			while True:
+				# Scroll to the bottom of the page
+				driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+
+				# Wait for more content to load 
+				time.sleep(SCROLL_PAUSE_TIME)
+
+				# Get the current height of the page
+				new_height = driver.execute_script("return document.body.scrollHeight")
+				if new_height == last_height: 
+					# If the current height of the page is the same as it was before,
+					# break the script because there is no more content to load.
+					break
+
+				last_height = new_height # Get the previous height of the page
+			i = 1 # Article index number starts at one in the HTML
+			datas = [] # Put all of the data in here
+			tol = 0 # Tol is the amount of times an error has been thrown (for this stock news page).
+					# When it hits 3, it's confirmed that all articles for this stock
+					# have been queried.
+
+			# The amount of articles on the page is unknown, so a while loop is
+			# used to iterate until no more new articles are found
+			while True:
+				try:
+					# This is the xpath for the title of the article
+					xpath = '/html/body/div[1]/div/div[4]/div[1]/div/div/div/div[2]/div[{}]/div/a'.format(i)
+					     # /html/body/div[1]/div/div[4]/div[1]/div/div/div/div[2]/div[4]/div/div/time
+					i += 1
+					# An error will be thrown if there are no more articles left because
+					# the driver won't be able to find the non-existent next article.
+
+					header = driver.find_element_by_xpath(xpath).text # Get the article's header text
+					link = driver.find_element_by_xpath(xpath).get_attribute('href') # Get the link of the article
+					date = driver.find_element_by_xpath('/html/body/div[1]/div/div[4]/div[1]/div/div/div/div[2]/div[{}]/div/div/time'.format(i)).text
+					#/html/body/div[1]/div/div[4]/div[1]/div/div/div/div[2]/div[7]/div/div/time
+					datas.append([header, link])
+					
+					# # print(header, link, date)
+
+					try:
+						units_behind = date[::-1]
+						units_behind = units_behind[units_behind.find(' ') + 1:][::-1]
+						units_behind = pd.Timedelta(units_behind)
+						if units_behind > pd.Timedelta('{} days'.format(days_to_look_back)):
+							break
+
+					except:
+						pass
+					# The links are processed by a seperate script because
+					# less threads have to be devoted to 
+
+					
+				except Exception as e:
+					# # print(e)
+					tol += 1 # Increase the error tally by 1 
+					time.sleep(30) 
+
+					if tol > 2: # The script will only break if 3 errors in a row are thrown to confirm
+								# it's actually found all the articles
+						break
+
+			datas = pd.DataFrame(datas, columns = ['text', 'link']) # Compile the list of headers and links into a pandas DataFrame
+			# datas.to_csv('reuters_data/{}.csv'.format(stock)) # Export the data to the reuters data folder under the name {stock}.csv
+
+		# Stop the driver
+		driver.quit()
+		return datas
+	except Exception as e:	
+		time.sleep(30) # Make this worker wait a bit before killing incase Reuters.com
+					   # is acting up
+		driver.quit() # The webdriver will be killed upon receiving an error
+					  # to save space on RAM
+		return np.nan
+
+def get_data_for_stock_with_lookback(stock: str, days_to_look_back: int):
+	news_releases = get_data_for_stock_lb_base(stock, days_to_look_back)
+	datas = []
+	for link in news_releases['link']:
+		data = convert_link_to_data(link)
+		datas.append(data)
+	return pd.DataFrame(datas, columns = ['author', 'publish_date', 'text'])
