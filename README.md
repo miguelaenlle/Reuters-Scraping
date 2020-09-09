@@ -1,6 +1,6 @@
 # Reuters Scraping Tools
 
-These are the scripts used for the getting the dataset shown here: https://www.kaggle.com/miguelaenlle/reuters-articles-for-3500-stocks-since-2017
+These are the scripts used for the getting the dataset shown here: https://rb.gy/lfqkx1
 
 ## Getting Started
 
